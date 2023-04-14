@@ -1,0 +1,46 @@
+#+title: README
+
+* Description
+This is a small backdoor written in C for Linux systems that can listen through the local firewall and execute commands as root
+
+* Setup
+The build system used is CMake, with the assumption that make is also installed on the system. To build the binary:
+
+#+BEGIN_SRC shell
+mkdir out
+cd out
+cmake ..
+make
+#+END_SRC
+
+To setup on a target system, the binary either needs to run as root, or /on the remote system/ capabilities need to be set on the binary before running as a non-root user:
+
+#+BEGIN_SRC shell
+sudo setcap cap_new_raw,cap_setuid=eip c2target # probably best to rename to something like dhcpcd
+#+END_SRC
+
+This program dynamically links against ~libpcap~, and as such it is required on the target system
+
+* Interesting operating parts
+** ~libpcap~
+~libpcap~ allows for creating and efficiently handling raw sockets, which operate on packets before firewall modules like ~nft~ or ~iptables~ have a chance to examine or change the operation of such packets. This means that it the firewall is only able to deny packets /after they have been processed by packet capture programs/
+
+See MITRE technique T1095 and MITRE software S0234, S0268, S0021, S0455, S0084, S0083, S0149, S0013, S0172, S0155
+
+** Information hiding
+It is impossible to run a program without being able to trace who started it with /proper/ logs, but there are certain aspects of training that CCDC team members go through that can be exploited. Namely, CCDC team members are trained to understand the current state of the operating system, and certain bits of information can be lost or erased once a process is set up. This program uses two techniques to perform information hiding:
+
+*** Process renaming
+When the backdoor spawns new processes, these processes are able to rename themselves in memory so that they show up as having a different name when running ~ps -auxf~. The way to do this is trivial; it turns out that by disregarding memory safety and simply passing a pointer to ~argv~ to subprocesses, it is possible to overwrite this memory and erase the command line parameters a process has as well as ruining the display of information in ~ps -aux~
+
+*** Orphans
+A good incident response team or CCDC team member will try to determine how a process spawned, and where it spawned from. If the process is long running, it is possible to run ~ps -auxf~ and see the parent process ID. However, when this backdoor spawns a program, it does so indirectly. It first spawns a child process, the child process then spawns the payload as a grandchild process of the backdoor, and finally the child process kills itself to be cleaned up by the backdoor. This orphans the payload, and makes the init system of the Linux operating system adopt the child process, overwriting its parent process ID to be 1.
+
+** Linux capabilities
+Capabilities are a lesser known feature of Linux designed to increase operational security. Unfortunately, due to their lesser known nature, they can in fact act as an attack technique very similar to MITRE ATT&CK technique T1548. Linux capabilities are designed to segment the permissions that the root user has, to allow a program to run as a non-root user but still carry out a singular root level task. Two capabilties are used by this backdoor:
+
+*** ~CAP_NET_RAW~
+~CAP_NET_RAW~ allows for the creation of raw sockets without admin privileges, and as such also allow the use of ~libpcap~ without admin privileges.
+
+*** ~CAP_SETUID~
+~CAP_SETUID~ allows for a process to arbitrarily call ~setuid~, without being root. This is used when the payload is run, in order to elevate from a regular user to being root. The idea behind using this is that when processes are being manually audited, someone may look for all the programs running as root and scrutinize them the most, but not spend as much time examining a system process that has an associated system user.
